@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>MultiView</title>
+<style>
+:root{--bg:#0b0d10;--panel:#14181d;--line:#232a32;--txt:#e8edf2;--dim:#8a95a1;--acc:#3ddc97}
+*{box-sizing:border-box}
+html,body{height:100%;height:100dvh;margin:0;background:var(--bg);color:var(--txt);font:14px/1.4 system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+header{display:flex;gap:8px;align-items:center;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header b{color:var(--acc);margin-right:6px;letter-spacing:.5px}
+input{background:#0b0d10;border:1px solid var(--line);color:var(--txt);padding:7px 9px;border-radius:6px;min-width:0}
+#url{flex:1 1 280px}#name{width:130px}
+button{background:#1c222a;border:1px solid var(--line);color:var(--txt);padding:7px 10px;border-radius:6px;cursor:pointer}
+button:hover{border-color:var(--acc)}button.on{background:var(--acc);color:#04130c;border-color:var(--acc)}
+.sep{width:1px;height:22px;background:var(--line);margin:0 4px}
+#grid{flex:1;display:grid;gap:4px;padding:4px;min-height:0}
+.tile{position:relative;background:#000;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0;min-width:0}
+.tile.over{outline:2px dashed var(--acc)}
+.bar{display:flex;align-items:center;gap:4px;padding:3px 6px;background:var(--panel);font-size:12px;cursor:grab;position:absolute;top:0;left:0;right:0;z-index:2;transform:translateY(-100%);transition:transform .15s}
+.tile:hover .bar{transform:none}
+.bar span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.bar button{padding:2px 7px;font-size:12px}
+iframe{flex:1;border:0;width:100%;height:100%;background:#000}
+.empty{margin:auto;color:var(--dim);text-align:center;padding:20px}
+.sleep{margin:auto;color:var(--dim)}
+.tile.fs{position:fixed;inset:0;z-index:50;border-radius:0}
+.tile.show .bar{transform:none}
+.tile.sel{outline:3px solid var(--acc);outline-offset:-3px}
+.menu,#ui{display:none;position:absolute;z-index:3;top:6px;left:6px;width:34px;height:34px;padding:0;border-radius:50%;background:rgba(0,0,0,.55);font-size:18px}
+#ui{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);right:6px;left:auto;z-index:60}
+@media (pointer:coarse){.menu,#ui{display:block}.bar{padding:6px}.bar button{padding:8px 10px;font-size:14px}}
+body.clean header{display:none}
+body.clean #grid{gap:0;padding:0}
+body.clean .tile{border:0;border-radius:0}
+body.clean{cursor:default}
+</style>
+</head>
+<body>
+<header>
+  <b>MULTIVIEW</b>
+  <input id="name" placeholder="Label (optional)">
+  <input id="url" placeholder="Paste embed URL or full &lt;iframe&gt; code, press Enter">
+  <button id="add">Add</button>
+  <span class="sep"></span>
+  <button data-l="auto" class="on">Grid</button>
+  <button data-l="row">Rows</button>
+  <button data-l="col">Columns</button>
+  <button data-l="spot">Spotlight</button>
+  <span class="sep"></span>
+  <button id="full" title="Clean fullscreen (F). H hides the toolbar only">Fullscreen</button>
+  <button id="share">Copy share link</button>
+  <button id="clear">Clear</button>
+</header>
+<button id="ui" title="Show/hide toolbar">☰</button>
+<div id="grid"></div>
+
+<script>
+let swapSel=null,streams=[],layout='auto',spot=0,dragIdx=null;
+const $=s=>document.querySelector(s),grid=$('#grid');
+
+function load(){
+  try{
+    if(location.hash.length>1){const d=JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));streams=d.s;layout=d.l||'auto';return}
+  }catch(e){}
+  try{const d=JSON.parse(localStorage.getItem('mv')||'null');if(d){streams=d.s;layout=d.l}}catch(e){}
+}
+function save(){try{localStorage.setItem('mv',JSON.stringify({s:streams,l:layout}))}catch(e){}}
+
+function norm(u){u=u.trim();if(!u)return'';if(!/^https?:\/\//i.test(u))u='https://'+u;return u}
+
+function best(n,W,H,g,aspect){
+  let b=null;
+  for(let c=1;c<=n;c++){
+    const r=Math.ceil(n/c),aw=W-g*(c-1),ah=H-g*(r-1);
+    const w=Math.min(aw/c,ah/r*aspect);
+    if(!b||w>b.w)b={c,r,w};
+  }
+  return b;
+}
+function applyLayout(){
+  const n=streams.length||1;
+  document.querySelectorAll('[data-l]').forEach(b=>b.classList.toggle('on',b.dataset.l===layout));
+  grid.style.gridTemplateRows=grid.style.gridTemplateColumns='';
+  grid.style.justifyContent=grid.style.alignContent='';
+  if(layout==='spot'&&n>1){
+    grid.style.gridTemplateColumns='3fr 1fr';grid.style.gridTemplateRows=`repeat(${n-1},1fr)`;return;
+  }
+  const cs=getComputedStyle(grid),g=parseFloat(cs.columnGap)||0,p=parseFloat(cs.paddingLeft)||0;
+  const W=grid.clientWidth-2*p,H=grid.clientHeight-2*p,A=16/9;
+  let c,r;
+  if(layout==='row'){c=1;r=n}
+  else if(layout==='col'){c=n;r=1}
+  else{const b=best(n,W,H,g,A);c=b.c;r=b.r}
+  const w=Math.min((W-g*(c-1))/c,(H-g*(r-1))/r*A),h=w/A;
+  // half-width columns let an incomplete last row sit centered
+  const hw=(w-g)/2,k=n-c*(r-1);
+  grid.style.gridTemplateColumns=`repeat(${c*2},${hw}px)`;
+  grid.style.gridTemplateRows=`repeat(${r},${h}px)`;
+  grid.style.justifyContent='center';grid.style.alignContent='center';
+  [...grid.children].forEach((t,i)=>{
+    if(!t.classList.contains('tile'))return;
+    const row=Math.floor(i/c),last=row===r-1;
+    const start=last?1+(c-k)+2*(i-c*(r-1)):1+2*(i%c);
+    t.style.gridRow=row+1;t.style.gridColumn=`${start} / span 2`;
+  });
+}
+addEventListener('resize',applyLayout);
+document.addEventListener('fullscreenchange',()=>setTimeout(applyLayout,50));
+function render(){
+  grid.innerHTML='';
+  if(!streams.length){grid.innerHTML='<div class="empty">No streams yet.<br>Paste a URL above to add one. Drag a tile\'s title bar onto another to swap them.</div>';applyLayout();save();return}
+  streams.forEach((s,i)=>{
+    const t=document.createElement('div');t.className='tile';
+    if(layout==='spot'&&streams.length>1&&i===0)t.style.gridRow=`1 / span ${streams.length-1}`;
+    t.innerHTML=`<button class="menu" data-m="1">⋯</button><div class="bar" draggable="true"><span>${esc(s.name||s.url)}</span>
+      <button data-a="swap" title="Tap here, then tap Swap on another tile">⇄</button>
+      <button data-a="spot" title="Make main">★</button>
+      <button data-a="sleep" title="Unload to save bandwidth/audio">${s.sleep?'Wake':'Sleep'}</button>
+      <button data-a="reload">↻</button><button data-a="fs">⛶</button><button data-a="rm">✕</button></div>`;
+    if(s.sleep){const d=document.createElement('div');d.className='sleep';d.textContent='Sleeping';t.appendChild(d)}
+    else{const f=document.createElement('iframe');f.src=s.url;f.allowFullscreen=true;
+      f.allow='autoplay; fullscreen; encrypted-media; picture-in-picture';t.appendChild(f)}
+    const bar=t.querySelector('.bar');
+    if(swapSel===i)t.classList.add('sel');
+    t.querySelector('.menu').addEventListener('click',()=>t.classList.toggle('show'));
+    bar.addEventListener('dragstart',e=>{dragIdx=i;e.dataTransfer.effectAllowed='move'});
+    t.addEventListener('dragover',e=>{if(dragIdx!==null){e.preventDefault();t.classList.add('over')}});
+    t.addEventListener('dragleave',()=>t.classList.remove('over'));
+    t.addEventListener('drop',e=>{e.preventDefault();if(dragIdx!==null&&dragIdx!==i){[streams[dragIdx],streams[i]]=[streams[i],streams[dragIdx]];dragIdx=null;render()}});
+    bar.addEventListener('dragend',()=>{dragIdx=null;document.querySelectorAll('.over').forEach(x=>x.classList.remove('over'))});
+    bar.addEventListener('click',e=>{
+      const a=e.target.dataset.a;if(!a)return;
+      if(a==='swap'){
+        if(swapSel===null){swapSel=i;render()}
+        else{if(swapSel!==i)[streams[swapSel],streams[i]]=[streams[i],streams[swapSel]];swapSel=null;render()}
+      }
+      else if(a==='rm'){streams.splice(i,1);render()}
+      else if(a==='spot'){streams.unshift(streams.splice(i,1)[0]);layout='spot';render()}
+      else if(a==='sleep'){s.sleep=!s.sleep;render()}
+      else if(a==='reload'){const f=t.querySelector('iframe');if(f)f.src=f.src}
+      else if(a==='fs'){document.fullscreenElement?document.exitFullscreen():(t.requestFullscreen?t.requestFullscreen():t.classList.toggle('fs'))}
+    });
+    grid.appendChild(t);
+  });
+  applyLayout();save();
+}
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function add(){
+  let raw=$('#url').value,label=$('#name').value.trim();
+  if(/<iframe/i.test(raw)){
+    const src=raw.match(/src\s*=\s*["']([^"']+)["']/i),ttl=raw.match(/title\s*=\s*["']([^"']+)["']/i);
+    if(!src)return alert('No src found in that iframe code');
+    raw=src[1];if(!label&&ttl)label=ttl[1].replace(/\s*Player$/i,'');
+  }
+  const u=norm(raw);if(!u)return;
+  streams.push({url:u,name:label,sleep:false});
+  $('#url').value=$('#name').value='';render();
+}
+$('#add').onclick=add;
+$('#url').addEventListener('keydown',e=>{if(e.key==='Enter')add()});
+document.querySelectorAll('[data-l]').forEach(b=>b.onclick=()=>{layout=b.dataset.l;render()});
+$('#clear').onclick=()=>{if(confirm('Remove all streams?')){streams=[];render()}};
+$('#share').onclick=async()=>{
+  const h=btoa(unescape(encodeURIComponent(JSON.stringify({s:streams.map(({url,name})=>({url,name})),l:layout}))));
+  const link=location.href.split('#')[0]+'#'+h;
+  try{await navigator.clipboard.writeText(link);$('#share').textContent='Copied!'}catch(e){prompt('Copy:',link)}
+  setTimeout(()=>$('#share').textContent='Copy share link',1500);
+};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.fs').forEach(x=>x.classList.remove('fs'))});
+function toggleFull(){
+  if(document.fullscreenElement){document.exitFullscreen()}
+  else{
+    const el=document.documentElement;
+    if(el.requestFullscreen)el.requestFullscreen().catch(()=>document.body.classList.add('clean'));
+    else{document.body.classList.toggle('clean');setTimeout(applyLayout,50)}
+  }
+}
+$('#full').onclick=toggleFull;
+$('#ui').onclick=()=>{document.body.classList.toggle('clean');setTimeout(applyLayout,50)};
+document.addEventListener('fullscreenchange',()=>{
+  document.body.classList.toggle('clean',document.fullscreenElement===document.documentElement);
+});
+document.addEventListener('keydown',e=>{
+  if(/input/i.test(e.target.tagName))return;
+  if(e.key==='f'||e.key==='F')toggleFull();
+  if(e.key==='h'||e.key==='H')document.body.classList.toggle('clean');
+});
+load();render();
+</script>
+</body>
+</html>
