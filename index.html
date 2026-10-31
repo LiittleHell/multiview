@@ -79,7 +79,7 @@ function best(n,W,H,g,aspect){
   for(let c=1;c<=n;c++){
     const r=Math.ceil(n/c),aw=W-g*(c-1),ah=H-g*(r-1);
     const w=Math.min(aw/c,ah/r*aspect);
-    if(!b||w>b.w)b={c,r,w};
+    if(!b||w>=b.w-0.5)b={c,r,w}; // near-ties go to more columns (side by side)
   }
   return b;
 }
